@@ -187,7 +187,7 @@ def mlm_train(args):
                                  args.max_transcripts_per_batch, collate_fn)
     tr_loader.setup(val_set=args.val_set, test_set=args.test_set)
     
-    tb_logger = pl.loggers.TensorBoardLogger('.', os.path.join('lightning_logs', args.name))
+    tb_logger = pl.loggers.TensorBoardLogger('.', os.path.join('lightning_logs', args.name)) # replace by /TIS_transformer/ if build singularity
     trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_epoch=True, logger=tb_logger)
 
     trainer.fit(mlm, datamodule=tr_loader)
@@ -209,7 +209,7 @@ def train(args):
                                  args.max_transcripts_per_batch, collate_fn)
     tr_loader.setup(val_set=args.val_set, test_set=args.test_set)
 
-    tb_logger = pl.loggers.TensorBoardLogger('.', os.path.join('lightning_logs', args.name))
+    tb_logger = pl.loggers.TensorBoardLogger('/TIS_transformer/', os.path.join('lightning_logs', args.name))
     trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_epoch=True, logger=tb_logger)
 
     trainer.fit(tis_tr, datamodule=tr_loader)
@@ -249,8 +249,8 @@ def impute(args):
         out_data.append(out.detach().cpu().numpy())
 
     if len(out_data) > 1:
-        results = np.vstack((tr_ids, np.array(x_data, dtype=object), 
-                             np.array(out_data, dtype=object))).T
+        results = np.array((tr_ids, np.array(x_data, dtype=object), 
+                             np.array(out_data, dtype=object)), dtype=object).T
     else:
         results = np.array([tr_ids[0], x_data[0], out_data[0]], dtype=object)
     np.save(args.save_path, results)

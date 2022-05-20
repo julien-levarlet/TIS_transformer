@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from performer_pytorch import PerformerLM
+from src.performer_pytorch_custom import PerformerLM
 from pdb import set_trace
 
 class TranscriptMLM(pl.LightningModule):
@@ -21,7 +21,7 @@ class TranscriptMLM(pl.LightningModule):
                                  ff_glu=ff_glu, emb_dropout=emb_dropout,
                                  ff_dropout=ff_dropout, attn_dropout=attn_dropout, 
                                  local_attn_heads=local_attn_heads, local_window_size=local_window_size,
-                                auto_check_redraw=False)
+                                )#auto_check_redraw=False)
         
         self.mask_c = mask_frac
         self.mask_m = self.mask_c + (1 - self.mask_c)*(1-rand_frac)
