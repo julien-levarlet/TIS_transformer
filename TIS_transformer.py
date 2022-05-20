@@ -224,8 +224,9 @@ def impute(args):
 
     if args.input[-4:] == '.npy':
         data = np.load(args.input, allow_pickle=True)
-        x_data = np.array([d[:,0] for d in data[:,0] if len(d[:,0]) <  args.max_seq_len], dtype=object)
-        tr_ids = data[:,1]
+        indices = [i for i in range(len(data[:,0])) if len(data[:,0][i]) <  args.max_seq_len]
+        x_data = np.array([data[:,0][i][:,0] for i in indices], dtype=object)
+        tr_ids = data[:,1][indices] # tr_ids shoud have the same shape as x_data  
     elif args.input[-3:] == '.fa':
         file = open(args.input)
         data = file.readlines()
@@ -249,8 +250,8 @@ def impute(args):
         out_data.append(out.detach().cpu().numpy())
 
     if len(out_data) > 1:
-        results = np.array((tr_ids, np.array(x_data, dtype=object), 
-                             np.array(out_data, dtype=object)), dtype=object).T
+        results = np.vstack((tr_ids, np.array(x_data, dtype=object), 
+                             np.array(out_data, dtype=object))).T
     else:
         results = np.array([tr_ids[0], x_data[0], out_data[0]], dtype=object)
     np.save(args.save_path, results)
