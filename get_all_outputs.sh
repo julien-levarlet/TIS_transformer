@@ -25,7 +25,7 @@ do
     if [[ "$exp_name" == *"$sub"* ]];
     then
         # get chromosome name
-        chr=${exp_name##*_}
+        chr=${exp_name#*_}
         chr=${chr%%_*}
         
         for folder in $model/*;

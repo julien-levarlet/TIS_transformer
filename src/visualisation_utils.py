@@ -4,16 +4,25 @@ import pandas as pd
 import seaborn as sns
 from sklearn.metrics import precision_recall_curve, auc, roc_auc_score
 
+MAX_SEQ_LEN = 25000
+
+def remove_long_sequences(matrix:np.ndarray):
+    indices = [i for i in range(len(matrix[:,0])) if len(matrix[:,0][i]) <  MAX_SEQ_LEN]
+    data = [matrix[:,0][i][:,0] for i in indices]
+    tis = [matrix[:,0][i][:,1] for i in indices]
+    tr_ids = matrix[:,1][indices]
+    return [tr_ids, data, tis]
+
 def concat_chr_arrays(results:np.ndarray, chr:np.ndarray):
-    if len(chr) != len(results):
+    if len(chr[0]) != len(results):
         raise ValueError("The chromosome and the corresponding output have not the same size")
     outputs = results[0][2]
-    labels = sp.csr_matrix(chr[0][0][:,1]) # label is a sparse array
-    for tr_index in range(1, len(chr)):
-        assert results[tr_index][0] == chr[tr_index][1], "les transcrit ne sont pas dans le même ordre dans les deux fichiers"
+    labels_sparse = sp.csr_matrix(chr[2][0]) # label is a sparse array
+    for tr_index in range(1, len(chr[0])):
+        assert results[tr_index][0] == chr[0][tr_index], "les transcrit ne sont pas dans le même ordre dans les deux fichiers"
         outputs = np.concatenate((outputs, results[tr_index][2]))
-        labels=sp.hstack((labels, sp.coo_matrix(chr[tr_index][0][:,1])), format="csr")
-    return outputs, labels
+        labels_sparse=sp.hstack((labels_sparse, sp.coo_matrix(chr[2][tr_index])), format="csr")
+    return outputs, labels_sparse
 
 def get_inference(array:np.ndarray, n:int)->np.ndarray:
     """https://stackoverflow.com/questions/6910641/how-do-i-get-indices-of-n-maximum-values-in-a-numpy-array"""
