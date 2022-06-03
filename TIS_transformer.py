@@ -121,6 +121,13 @@ class ParseArgs(object):
                                 help="the amount of heads used for local attention")
             tf_parse.add_argument('--local_window_size', type=int, default=256,
                                 help="window size of local attention")
+            # added arguments
+            tf_parse.add_argument('--mask_by_codons', action='store_true',
+                                help="the mlm mask will be apply by 3 nucleotides")
+            tf_parse.add_argument('--use_rand', action='store_true',
+                                help="mlm will randomise some nucleotides during mlm")
+            tf_parse.add_argument('--logdir', type=str, default='/TIS_transformer/', 
+                                help='parent directory of the lightning_logs directory')
             
             #tr_parse = parser.add_argument_group('Trainer', 'pytorch lightning Trainer arguments')
             #tr_parse = pl.Trainer.add_argparse_args(tr_parse, inplace=True)
@@ -181,13 +188,14 @@ def mlm_train(args):
                         args.nb_features, args.feature_redraw_interval, args.generalized_attention,
                         args.kernel_fn, args.reversible, args.ff_chunks, args.use_scalenorm, 
                         args.use_rezero, False, args.ff_glu, args.emb_dropout, args.ff_dropout,
-                        args.attn_dropout, args.local_attn_heads, args.local_window_size)
+                        args.attn_dropout, args.local_attn_heads, args.local_window_size,
+                        use_rand=args.use_rand, mask_by_codons=args.mask_by_codons)
     
     tr_loader = TranscriptLoader(args.data_path, args.max_seq_len, args.num_workers, 
                                  args.max_transcripts_per_batch, collate_fn)
     tr_loader.setup(val_set=args.val_set, test_set=args.test_set)
     
-    tb_logger = pl.loggers.TensorBoardLogger('.', os.path.join('lightning_logs', args.name)) # replace by /TIS_transformer/ if build singularity
+    tb_logger = pl.loggers.TensorBoardLogger(args.logdir, os.path.join('lightning_logs', args.name)) # replace by /TIS_transformer/ if build singularity
     trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_epoch=True, logger=tb_logger)
 
     trainer.fit(mlm, datamodule=tr_loader)
@@ -209,7 +217,7 @@ def train(args):
                                  args.max_transcripts_per_batch, collate_fn)
     tr_loader.setup(val_set=args.val_set, test_set=args.test_set)
 
-    tb_logger = pl.loggers.TensorBoardLogger('/TIS_transformer/', os.path.join('lightning_logs', args.name))
+    tb_logger = pl.loggers.TensorBoardLogger(args.logdir, os.path.join('lightning_logs', args.name))
     trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_epoch=True, logger=tb_logger)
 
     trainer.fit(tis_tr, datamodule=tr_loader)
