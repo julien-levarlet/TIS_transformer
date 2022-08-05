@@ -429,19 +429,21 @@ class Performer(nn.Module):
         return self.net(x, **kwargs)
 
 class PerformerLM(nn.Module):
-    def __init__(self, *, num_tokens, max_seq_len, dim, depth, heads, dim_head = 64, local_attn_heads = 0, local_window_size = 256, causal = False, ff_mult = 4, nb_features = None, feature_redraw_interval = 1000, reversible = False, ff_chunks = 1, ff_glu = False, emb_dropout = 0., ff_dropout = 0., attn_dropout = 0., generalized_attention = False, kernel_fn = nn.ReLU(), qr_uniform_q = False, use_scalenorm = False, use_rezero = False, cross_attend = False, no_projection = False, tie_embed = False, fixed_position_emb = False, axial_position_emb = False, axial_position_shape = None):
+    def __init__(self, *, num_tokens, max_seq_len, dim, depth, heads, dim_head = 64, local_attn_heads = 0, local_window_size = 256, causal = False, ff_mult = 4, nb_features = None, feature_redraw_interval = 1000, reversible = False, ff_chunks = 1, ff_glu = False, emb_dropout = 0., ff_dropout = 0., attn_dropout = 0., generalized_attention = False, kernel_fn = nn.ReLU(), qr_uniform_q = False, use_scalenorm = False, use_rezero = False, cross_attend = False, no_projection = False, tie_embed = False, embedding='fixed', axial_position_shape = None):
         super().__init__()
         local_attn_heads = cast_tuple(local_attn_heads)
         self.max_seq_len = max_seq_len
         self.token_emb = nn.Embedding(num_tokens, dim)
 
-        if fixed_position_emb:
+        if embedding=='fixed':
             self.pos_emb = FixedPositionalEmbedding(dim, max_seq_len)
-        elif axial_position_emb:
+        elif embedding=='axial':
             axial_position_shape = default(axial_position_shape, (math.ceil(max_seq_len / 64), 64))
             self.pos_emb = AxialPositionalEmbedding(dim, axial_position_shape)
-        else:
+        elif embedding=='absolute':
             self.pos_emb = AbsolutePositionalEmbedding(dim, max_seq_len)
+        else:
+            raise ValueError(f'The embedding {embedding} is supported')
 
         self.dropout = nn.Dropout(emb_dropout)
 

@@ -1,14 +1,15 @@
 import argparse
 import sys
 import os
+import numpy as np
 
 from src.transformer_model import TranscriptMLM, TranscriptTIS
 from src.transcript_loader import TranscriptLoader, collate_fn
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 def boolean(v):
     if isinstance(v, bool): return v
@@ -74,9 +75,15 @@ class ParseArgs(object):
                                     help="fraction of inputs that are masked")
                 tf_parse.add_argument('--rand_frac', type=float, default=0.10, 
                                     help="fraction of masked inputs that are randomized")
-            else:
-                tf_parse.add_argument('--transfer_checkpoint', type=str,
+            
+            tf_parse.add_argument('--transfer_checkpoint', type=str,
                                      help="Path to checkpoint pretrained model")
+            
+            tf_parse.add_argument('--patience', type=int, default=10,
+                                help="Number of epochs to wait before early stopping the training")
+            
+            tf_parse.add_argument('--emb', type=str, default='fixed',
+                                help="Type of embedding used, can be fixed, axial or absolute")
             
             tf_parse.add_argument('--lr', type=float, default=1e-3,
                                 help="learning rate")
@@ -122,7 +129,9 @@ class ParseArgs(object):
             tf_parse.add_argument('--local_window_size', type=int, default=256,
                                 help="window size of local attention")
             # added arguments
-            tf_parse.add_argument('--mask_by_codons', action='store_true',
+            tf_parse.add_argument('--mask_block', action='store_true',
+                                help="the mlm mask will be apply in one block")
+            tf_parse.add_argument('--mask_codons', action='store_true',
                                 help="the mlm mask will be apply by 3 nucleotides")
             tf_parse.add_argument('--use_rand', action='store_true',
                                 help="mlm will randomise some nucleotides during mlm")
@@ -189,14 +198,19 @@ def mlm_train(args):
                         args.kernel_fn, args.reversible, args.ff_chunks, args.use_scalenorm, 
                         args.use_rezero, False, args.ff_glu, args.emb_dropout, args.ff_dropout,
                         args.attn_dropout, args.local_attn_heads, args.local_window_size,
-                        use_rand=args.use_rand, mask_by_codons=args.mask_by_codons)
+                        use_rand=args.use_rand, mask_block=args.mask_block, mask_codons=args.mask_codons,
+                        embedding=args.emb)
+
+    if args.transfer_checkpoint:
+        mlm = mlm.load_from_checkpoint(args.transfer_checkpoint, lr=args.lr, strict=False)
     
     tr_loader = TranscriptLoader(args.data_path, args.max_seq_len, args.num_workers, 
                                  args.max_transcripts_per_batch, collate_fn)
     tr_loader.setup(val_set=args.val_set, test_set=args.test_set)
     
-    tb_logger = pl.loggers.TensorBoardLogger(args.logdir, os.path.join('lightning_logs', args.name)) # replace by /TIS_transformer/ if build singularity
-    trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_epoch=True, logger=tb_logger)
+    tb_logger = pl.loggers.TensorBoardLogger(args.logdir, os.path.join('lightning_logs', args.name))
+    # early stopping if accuracy does not improve for 3 epochs
+    trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_epoch=True, logger=tb_logger, callbacks=EarlyStopping(monitor='val_loss', mode='min', patience=args.patience))
 
     trainer.fit(mlm, datamodule=tr_loader)
     
@@ -208,7 +222,7 @@ def train(args):
                         args.feature_redraw_interval, args.generalized_attention, args.kernel_fn, 
                         args.reversible, args.ff_chunks, args.use_scalenorm, args.use_rezero, False,
                         args.ff_glu, args.emb_dropout, args.ff_dropout, args.attn_dropout,
-                        args.local_attn_heads, args.local_window_size)
+                        args.local_attn_heads, args.local_window_size, embedding=args.emb)
 
     if args.transfer_checkpoint:
         tis_tr = tis_tr.load_from_checkpoint(args.transfer_checkpoint, lr=args.lr, strict=False)
@@ -218,7 +232,8 @@ def train(args):
     tr_loader.setup(val_set=args.val_set, test_set=args.test_set)
 
     tb_logger = pl.loggers.TensorBoardLogger(args.logdir, os.path.join('lightning_logs', args.name))
-    trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_epoch=True, logger=tb_logger)
+    # early stopping if pr_auc does not improve for 3 epochs
+    trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_epoch=True, logger=tb_logger, callbacks=EarlyStopping(monitor='val_loss', mode='min', patience=args.patience))
 
     trainer.fit(tis_tr, datamodule=tr_loader)
 

@@ -1,3 +1,4 @@
+from argparse import ArgumentError
 from random import randint
 import torch
 import torch.nn.functional as F
@@ -9,7 +10,8 @@ class TranscriptMLM(pl.LightningModule):
                  depth, heads, dim_head, causal, nb_features, feature_redraw_interval,
                  generalized_attention, kernel_fn, reversible, ff_chunks, use_scalenorm,
                  use_rezero, tie_embed, ff_glu, emb_dropout, ff_dropout, attn_dropout,
-                 local_attn_heads, local_window_size, use_rand=False, mask_by_codons=False):
+                 local_attn_heads, local_window_size, use_rand=False, mask_block=False, mask_codons=False, 
+                 embedding='fixed'):
         super().__init__()
         self.model = PerformerLM(num_tokens=num_tokens, max_seq_len=max_seq_len, 
                                  dim=dim, depth=depth, heads=heads, dim_head=dim_head, 
@@ -21,9 +23,15 @@ class TranscriptMLM(pl.LightningModule):
                                  ff_glu=ff_glu, emb_dropout=emb_dropout,
                                  ff_dropout=ff_dropout, attn_dropout=attn_dropout, 
                                  local_attn_heads=local_attn_heads, local_window_size=local_window_size,
+                                 embedding=embedding,
                                 )#auto_check_redraw=False)
         
-        self.mask_by_codons = mask_by_codons
+        self.mask_block = mask_block
+        self.mask_codons = mask_codons
+
+        if mask_codons and mask_block:
+            raise ArgumentError("Masking can't be set to block and codons at the same time")
+
         #
         self.use_rand = use_rand
         self.mask_c = mask_frac
@@ -48,33 +56,50 @@ class TranscriptMLM(pl.LightningModule):
     def randomisation(self, x, dist, val=False):
         # self supervised learning protocol
         # apply mlm mask on input
-        mask_tokens = torch.logical_and(dist > self.mask_c, dist < self.mask_m)
-        if self.mask_by_codons:
-            mask_tokens = mask_tokens.logical_or(torch.roll(mask_tokens, 1, 1)) # shift to the rigth on rows
-            mask_tokens = mask_tokens.logical_or(torch.roll(mask_tokens, 1, 1))
+        if self.mask_block or self.mask_codons:
+            mask_tokens = dist
+        else:
+            mask_tokens = torch.logical_and(dist > self.mask_c, dist < self.mask_m)
         x[mask_tokens] = self.mask_token
-
-        # create empty rand mask 
-        mask_rand = torch.zeros_like(x, dtype=torch.bool, device=self.device)
 
         # apply random tokens to input
         if val:
             mask_rand = torch.logical_and(dist > self.mask_m, dist < self.mask_u)
-            if self.mask_by_codons:
-                mask_rand = mask_rand.logical_or(torch.roll(mask_rand, 1, 1)) # shift to the rigth on rows
-                mask_rand = mask_rand.logical_or(torch.roll(mask_rand, 1, 1))
             x[mask_rand] = torch.randint(0, self.mask_token,(mask_rand.sum(),), device=self.device)
 
         return x
     
-    def mask_dist(self,size):
-        prob_mask = torch.zeros(size, device=self.device, dtype=bool)
-        for i in prob_mask:
-            reading_frame = randint(0, 2)
-            i[reading_frame+1::3] = 1
-            i[reading_frame+2::3] = 1
-            i[:reading_frame] = 1
-        return prob_mask
+    def mask_dist(self, x, lens=None):
+        if self.mask_block:
+            # mask continuous sequence of nucleotides at random position
+            mask = torch.zeros_like(x, device=self.device, dtype=bool)
+            for i, l in enumerate(lens):                
+                mask_size = int(l * (1-self.mask_c))
+                mask_start_index = randint(0, l-mask_size-1)
+                mask[i, mask_start_index:mask_start_index+mask_size] = 1
+            return mask, mask
+
+        if self.mask_codons:
+            # if we mask 3 nucleotides each time, we should select a random reading frame and mask the codons
+            dist = torch.empty(x.shape, device=self.device).uniform_(0,1,)
+            # select a reading frame and keep only the first nucletide of each codons
+            prob_mask = torch.zeros(x.size(), device=self.device, dtype=bool)
+            for i in prob_mask:
+                reading_frame = randint(0, 2)
+                i[reading_frame+1::3] = 1
+                i[reading_frame+2::3] = 1
+                i[:reading_frame] = 1
+            dist[prob_mask] = 0
+            # mask three nucleotides for each masked positions
+            mask = dist > self.mask_c
+            mask = mask.logical_or(torch.roll(mask, 1, 1))
+            mask = mask.logical_or(torch.roll(mask, 1, 1))
+            return mask, mask
+        
+        # mask random nucleotides
+        dist = torch.empty(x.shape, device=self.device).uniform_(0,1,)
+        mask = dist > self.mask_c
+        return mask, dist
 
     def forward(self, x, val=False):        
         x = self.model(x, mask=torch.ones_like(x, device=self.device).bool(), 
@@ -83,21 +108,11 @@ class TranscriptMLM(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x = batch[0]
+        lens = batch[5]
+        mask, dist = self.mask_dist(x, lens)
 
-        if self.mask_by_codons:
-            # if we mask 3 nucleotides each time, we should select a random reading frame and mask the codons
-            dist = torch.empty(x.shape, device=self.device).uniform_(0,1,)
-            prob_mask = self.mask_dist(x.size())
-            dist[prob_mask] = 0
-            mask = dist > self.mask_c
-            mask = mask.logical_or(torch.roll(mask, 1, 1))
-            mask = mask.logical_or(torch.roll(mask, 1, 1))
-        else :
-            dist = torch.empty(x.shape, device=self.device).uniform_(0,1,)
-            mask = dist > self.mask_c
         y_true = x.masked_select(mask)
         y_hat = self(self.randomisation(x, dist, val=self.use_rand))[mask]
-
         loss = F.cross_entropy(y_hat, y_true)
         self.log('train_loss', loss, sync_dist=True)
         self.train_acc(F.softmax(y_hat, dim=1), y_true)
@@ -107,21 +122,11 @@ class TranscriptMLM(pl.LightningModule):
         
     def validation_step(self, batch, batch_idx):
         x = batch[0]
+        lens = batch[5]
+        mask, dist = self.mask_dist(x, lens)
 
-        if self.mask_by_codons:
-            # if we mask 3 nucleotides each time, we should select a random reading frame and mask the codons
-            dist = torch.empty(x.shape, device=self.device).uniform_(0,1,)
-            prob_mask = self.mask_dist(x.size())
-            dist[prob_mask] = 0
-            mask = dist > self.mask_c
-            mask = mask.logical_or(torch.roll(mask, 1, 1))
-            mask = mask.logical_or(torch.roll(mask, 1, 1))
-        else :
-            dist = torch.empty(x.shape, device=self.device).uniform_(0,1,)
-            mask = dist > self.mask_c
         y_true = x.masked_select(mask)
         y_hat = self(self.randomisation(x, dist, val=self.use_rand))[mask]
-
         self.log('val_loss', F.cross_entropy(y_hat, y_true), on_step=False, 
                  on_epoch=True, sync_dist=True)
         self.val_acc(F.softmax(y_hat, dim=1), y_true)
@@ -129,18 +134,9 @@ class TranscriptMLM(pl.LightningModule):
                 
     def test_step(self, batch, batch_idx):
         x = batch[0]
+        lens = batch[5]
+        mask, dist = self.mask_dist(x, lens)
 
-        if self.mask_by_codons:
-            # if we mask 3 nucleotides each time, we should select a random reading frame and mask the codons
-            dist = torch.empty(x.shape, device=self.device).uniform_(0,1,)
-            prob_mask = self.mask_dist(x.size())
-            dist[prob_mask] = 0
-            mask = dist > self.mask_c
-            mask = mask.logical_or(torch.roll(mask, 1, 1))
-            mask = mask.logical_or(torch.roll(mask, 1, 1))
-        else :
-            dist = torch.empty(x.shape, device=self.device).uniform_(0,1,)
-            mask = dist > self.mask_c
         y_true = x.masked_select(mask)
         y_hat = self(self.randomisation(x, dist, val=self.use_rand))[mask]
         
@@ -161,7 +157,7 @@ class TranscriptTIS(pl.LightningModule):
                  depth, heads, dim_head, causal, nb_features, feature_redraw_interval,
                  generalized_attention, kernel_fn, reversible, ff_chunks, use_scalenorm,
                  use_rezero, tie_embed, ff_glu, emb_dropout, ff_dropout, attn_dropout,
-                 local_attn_heads, local_window_size):
+                 local_attn_heads, local_window_size, embedding='fixed'):
         super().__init__()
         self.model = PerformerLM(num_tokens=num_tokens, max_seq_len=max_seq_len, 
                                  dim=dim, depth=depth, heads=heads, dim_head=dim_head, 
@@ -172,7 +168,8 @@ class TranscriptTIS(pl.LightningModule):
                                  use_rezero=use_rezero, tie_embed=tie_embed,
                                  ff_glu=ff_glu, emb_dropout=emb_dropout,
                                  ff_dropout=ff_dropout, attn_dropout=attn_dropout, 
-                                 local_attn_heads=local_attn_heads, local_window_size=local_window_size)
+                                 local_attn_heads=local_attn_heads, local_window_size=local_window_size,
+                                 embedding=embedding)
         
         self.mask_token = 4
         
@@ -191,8 +188,8 @@ class TranscriptTIS(pl.LightningModule):
     
         self.save_hyperparameters()
 
-    def forward(self, x, mask=None, nt_mask=None):
-        x = self.model(x, return_encodings=True, mask=mask)
+    def forward(self, x, mask=None, nt_mask=None, apply_dropout=True):
+        x = self.model(x, return_encodings=True, mask=mask, apply_dropout=apply_dropout)
         x = x[torch.logical_and(mask, nt_mask)]
         x = x.view(-1,self.dim)
         
